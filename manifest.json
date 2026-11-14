@@ -1,0 +1,12 @@
+{
+  "apiVersion": 1,
+  "id": "on-device-dictation",
+  "name": "On-device dictation",
+  "version": "0.2.0",
+  "minAppVersion": "0.6.1",
+  "description": "Dictate into any text field with speech transcribed on this computer by NVIDIA Nemotron 3.5 ASR. Audio never leaves your device.",
+  "author": "MichaelOlea \u2014 code written 100% by AI (Claude); see AI_DISCLOSURE.md",
+  "main": "main.js",
+  "backend": "backend.cjs",
+  "styles": "styles.css"
+}

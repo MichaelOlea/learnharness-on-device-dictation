@@ -1,0 +1,8 @@
+node_modules/
+# Build output: published as a release asset, not committed.
+dist/
+release/
+# Downloaded engine, models and settings when developing in place: never commit.
+data/
+# Local end-to-end test output
+*.png

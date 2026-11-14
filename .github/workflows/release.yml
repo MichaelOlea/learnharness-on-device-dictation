@@ -1,0 +1,32 @@
+name: Release
+
+# Push a tag such as v0.2.1 to build, test and publish the installable zip.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run package
+      - name: Check the tag matches the manifest version
+        run: test "v$(node -p 'require("./manifest.json").version')" = "$GITHUB_REF_NAME"
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 \
+            && gh release upload "$GITHUB_REF_NAME" release/on-device-dictation.zip --clobber \
+            || gh release create "$GITHUB_REF_NAME" release/on-device-dictation.zip --title "$GITHUB_REF_NAME" --generate-notes

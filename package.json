@@ -1,0 +1,47 @@
+{
+  "name": "learnharness-on-device-dictation",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "license": "AGPL-3.0-only",
+  "description": "LearnHarness plugin that makes the built-in Dictate button transcribe on your computer with NVIDIA Nemotron 3.5 ASR instead of Deepgram.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MichaelOlea/learnharness-on-device-dictation.git"
+  },
+  "homepage": "https://github.com/MichaelOlea/learnharness-on-device-dictation#readme",
+  "bugs": {
+    "url": "https://github.com/MichaelOlea/learnharness-on-device-dictation/issues"
+  },
+  "engines": {
+    "node": ">=20.3"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run build && tsx --test tests/*.test.ts",
+    "test:e2e": "npm run build && tsx --test --test-concurrency=1 tests/e2e/*.e2e.ts",
+    "install:local": "npm run build && node scripts/install-plugin-local.mjs",
+    "package": "npm run build && node scripts/package-release.mjs"
+  },
+  "dependencies": {
+    "unbzip2-stream": "1.4.3"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-agent-core": "1.4.0",
+    "@earendil-works/pi-ai": "1.4.0",
+    "@types/jsdom": "21.1.7",
+    "@types/node": "24.13.3",
+    "@types/react": "19.2.2",
+    "@types/react-dom": "19.2.2",
+    "esbuild": "0.28.2",
+    "jsdom": "26.1.0",
+    "learnharness-plugin-api": "file:vendor/learnharness-plugin-api",
+    "playwright-core": "1.56.1",
+    "react": "19.2.0",
+    "react-dom": "19.2.0",
+    "tsx": "4.23.12",
+    "typebox": "1.3.27",
+    "typescript": "5.9.3"
+  }
+}

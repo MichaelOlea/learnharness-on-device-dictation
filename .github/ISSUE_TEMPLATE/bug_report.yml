@@ -1,0 +1,30 @@
+name: Bug report
+description: Something does not work
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what happened instead. Include any message shown on the Dictate button or the plugin's settings page.
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system and CPU
+      placeholder: e.g. Ubuntu 24.04 x64, macOS 15 Apple silicon, Windows 11 x64
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: LearnHarness and plugin versions
+      placeholder: e.g. LearnHarness 0.6.1, plugin 0.2.0
+    validations:
+      required: true
+  - type: dropdown
+    id: engine
+    attributes:
+      label: Where the speech engine runs (plugin settings)
+      options: [Automatic, Inside LearnHarness, Separate Node.js process, Don't know]

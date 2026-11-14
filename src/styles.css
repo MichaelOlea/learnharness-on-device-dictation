@@ -1,0 +1,144 @@
+/* On-device dictation. Every selector is scoped to this plugin's own elements;
+   nothing here targets host widgets. Colours come from the host theme tokens. */
+
+.odd-hud {
+  position: fixed;
+  top: 3.75rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 2147483000;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  max-width: min(44rem, calc(100vw - 2rem));
+  padding: 0.4rem 0.5rem 0.4rem 0.8rem;
+  border: 1px solid var(--border, rgba(127, 127, 127, 0.35));
+  border-radius: 999px;
+  background: var(--popover, var(--background, #fff));
+  color: var(--popover-foreground, var(--foreground, #111));
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.18);
+  font-family: var(--font-ui, system-ui, sans-serif);
+  font-size: 0.8125rem;
+  line-height: 1.3;
+  user-select: none;
+}
+.odd-hud[hidden] { display: none; }
+.odd-hud-dot {
+  flex: none;
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 50%;
+  background: var(--muted-foreground, #888);
+}
+.odd-hud[data-state="listening"] .odd-hud-dot {
+  background: var(--destructive, #dc2626);
+  animation: odd-pulse 1.4s ease-in-out infinite;
+}
+.odd-hud[data-state="starting"] .odd-hud-dot,
+.odd-hud[data-state="loading"] .odd-hud-dot,
+.odd-hud[data-state="finishing"] .odd-hud-dot { animation: odd-pulse 0.9s ease-in-out infinite; }
+.odd-hud[data-state="message"] .odd-hud-dot { display: none; }
+.odd-hud[data-tone="error"] { border-color: var(--destructive, #dc2626); }
+.odd-hud-meter {
+  flex: none;
+  width: 2.5rem;
+  height: 0.3rem;
+  border-radius: 999px;
+  background: var(--muted, rgba(127, 127, 127, 0.2));
+  overflow: hidden;
+}
+.odd-hud:not([data-state="listening"]) .odd-hud-meter { display: none; }
+.odd-hud-meter > i {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--foreground, #111);
+  transform-origin: left center;
+  transform: scaleX(0.04);
+  transition: transform 80ms linear;
+}
+.odd-hud-label { flex: none; font-weight: 600; white-space: nowrap; }
+.odd-hud[data-state="message"] .odd-hud-label { flex: 0 1 auto; white-space: normal; font-weight: 500; }
+.odd-hud-detail {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted-foreground, #666);
+}
+.odd-hud-detail:empty { display: none; }
+.odd-hud-button {
+  flex: none;
+  border: 1px solid var(--border, rgba(127, 127, 127, 0.35));
+  border-radius: 999px;
+  padding: 0.2rem 0.7rem;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.odd-hud-button[hidden] { display: none; }
+.odd-hud-button:hover { background: var(--muted, rgba(127, 127, 127, 0.15)); }
+.odd-hud-primary {
+  background: var(--foreground, #111);
+  color: var(--background, #fff);
+  border-color: transparent;
+}
+.odd-hud-primary:hover { background: var(--foreground, #111); opacity: 0.85; }
+.odd-hud-close { padding: 0.2rem 0.5rem; border-color: transparent; }
+@keyframes odd-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+@media (prefers-reduced-motion: reduce) {
+  .odd-hud-dot { animation: none !important; }
+  .odd-hud-meter > i { transition: none; }
+}
+
+/* Settings page and set-up dialog */
+.odd-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+  color: var(--foreground);
+  font-family: var(--font-ui, system-ui, sans-serif);
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+.odd-dialog { padding: 1.5rem; max-width: 34rem; }
+.odd-panel h2 { margin: 0; font-size: 1.05rem; font-weight: 600; }
+.odd-panel p { margin: 0; }
+.odd-muted { color: var(--muted-foreground); }
+.odd-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 0.6rem;
+  padding: 0.9rem 1rem;
+}
+.odd-card[data-tone="error"] { border-color: var(--destructive, #dc2626); }
+.odd-state { font-weight: 600; }
+.odd-list { margin: 0; padding-left: 1.1rem; }
+.odd-list li { margin: 0.15rem 0; }
+.odd-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
+.odd-progress {
+  height: 0.4rem;
+  border-radius: 999px;
+  background: var(--muted, rgba(127, 127, 127, 0.2));
+  overflow: hidden;
+}
+.odd-progress > i {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: var(--foreground);
+  transition: width 200ms linear;
+}
+.odd-code {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.8em;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+.odd-details > summary { cursor: pointer; color: var(--muted-foreground); }
+.odd-details[open] > summary { margin-bottom: 0.4rem; }
