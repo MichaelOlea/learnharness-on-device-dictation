@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  DEFAULT_SETTINGS, LANGUAGES, LATENCIES, MODELS, RUNTIMES, effectiveThreads, extendTranscript, isLanguage,
-  mapHostLanguage, normalizeTranscript, parseSettings, parseSettingsPatch, sessionLanguage,
+  DEFAULT_SETTINGS, FULL_PRECISION_MODELS, LANGUAGES, LATENCIES, MODELS, PRECISIONS, RUNTIMES, effectiveThreads, extendTranscript,
+  fullPrecisionPackage, isArchiveModel, isLanguage, mapHostLanguage, modelFor, modelSize, normalizeTranscript, offeredPrecisions,
+  parseSettings, parseSettingsPatch, sessionLanguage,
 } from "../src/contract.ts";
 
 test("catalog entries are complete and pinned", () => {
@@ -16,6 +17,23 @@ test("catalog entries are complete and pinned", () => {
     for (const file of model.files) { assert.match(file.sha256, /^[0-9a-f]{64}$/); assert.ok(file.bytes > 0); }
   }
   assert.equal(new Set(LATENCIES.map(latency => MODELS[latency].sha256)).size, LATENCIES.length);
+  for (const latency of LATENCIES) {
+    assert.equal(modelFor(latency, "int8"), MODELS[latency], "the compact model exists for every latency");
+    assert.equal(MODELS[latency].precision, "int8");
+    assert.equal(modelFor(latency, "fp32"), FULL_PRECISION_MODELS[latency]);
+  }
+  // Whatever full-precision packages are listed must be pinned just as tightly.
+  for (const [latency, model] of Object.entries(FULL_PRECISION_MODELS)) {
+    assert.equal(model.latency, latency);
+    assert.equal(model.precision, "fp32");
+    assert.equal(isArchiveModel(model), false);
+    assert.match(model.baseUrl, /^https:\/\/huggingface\.co\/csukuangfj2\/sherpa-onnx-nemotron-3\.5-asr-streaming-0\.6b-\d+ms-2026-06-11\/resolve\/[0-9a-f]{40}\/$/, "pinned to a commit");
+    const names = model.files.map(file => file.name);
+    assert.equal(new Set(names).size, names.length);
+    for (const name of Object.values(model.entry)) assert.ok(names.includes(name), name);
+    for (const file of model.files) { assert.match(file.name, /^[A-Za-z0-9._-]+$/); assert.match(file.sha256, /^[0-9a-f]{64}$/); assert.ok(file.bytes > 0); }
+  }
+  assert.deepEqual(offeredPrecisions(), Object.keys(FULL_PRECISION_MODELS).length ? ["int8", "fp32"] : ["int8"]);
   for (const [key, runtime] of Object.entries(RUNTIMES)) {
     assert.equal(runtime.key, key);
     assert.match(runtime.url, /^https:\/\/registry\.npmjs\.org\/sherpa-onnx-[a-z0-9-]+\/-\/sherpa-onnx-[a-z0-9-]+-2\.0\.1\.tgz$/);
@@ -25,12 +43,29 @@ test("catalog entries are complete and pinned", () => {
   assert.deepEqual(Object.keys(RUNTIMES).sort(), ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64", "win32-arm64", "win32-x64"]);
 });
 
+test("model packages describe both ways a model is published", () => {
+  const compact = MODELS["560"];
+  assert.deepEqual(modelSize(compact), { download: 475_271_763, installed: 657_601_403 + 14_978_075 + 9_504_438 + 131_440 });
+  const full = fullPrecisionPackage("1120", "a".repeat(40), [
+    { name: "encoder.onnx", bytes: 10, sha256: "1".repeat(64) }, { name: "encoder.data", bytes: 1000, sha256: "2".repeat(64) },
+    { name: "decoder.onnx", bytes: 20, sha256: "3".repeat(64) }, { name: "joiner.onnx", bytes: 30, sha256: "4".repeat(64) },
+    { name: "tokens.txt", bytes: 5, sha256: "5".repeat(64) },
+  ]);
+  assert.equal(full.baseUrl, `https://huggingface.co/csukuangfj2/sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-1120ms-2026-06-11/resolve/${"a".repeat(40)}/`);
+  assert.notEqual(full.directory, MODELS["1120"].directory, "both precisions can be installed side by side");
+  assert.deepEqual(modelSize(full), { download: 1065, installed: 1065 });
+  assert.deepEqual(full.entry, { encoder: "encoder.onnx", decoder: "decoder.onnx", joiner: "joiner.onnx", tokens: "tokens.txt" });
+  assert.deepEqual([...PRECISIONS], ["int8", "fp32"]);
+});
+
 test("settings changes are validated strictly", () => {
   assert.deepEqual(parseSettingsPatch({ language: "de-DE", latency: "1120", threads: 4 }), { language: "de-DE", latency: "1120", threads: 4 });
   assert.deepEqual(parseSettingsPatch({ nodePath: "  /usr/bin/node  " }), { nodePath: "/usr/bin/node" });
   assert.deepEqual(parseSettingsPatch({ language: "host", replaceBuiltIn: false, liveButton: true, preload: false }), { language: "host", replaceBuiltIn: false, liveButton: true, preload: false });
+  assert.deepEqual(parseSettingsPatch({ precision: "fp32" }), { precision: "fp32" });
+  assert.deepEqual(parseSettingsPatch({ precision: "int8" }), { precision: "int8" });
   for (const bad of [
-    null, [], "x", { language: "xx-YY" }, { language: "en" }, { latency: "80" }, { latency: 560 }, { threads: -1 }, { threads: 1.5 },
+    null, [], "x", { language: "xx-YY" }, { language: "en" }, { latency: "80" }, { latency: 560 }, { precision: "fp16" }, { precision: 32 }, { precision: "" }, { threads: -1 }, { threads: 1.5 },
     { threads: 17 }, { autoStopSeconds: 601 }, { unloadAfterMinutes: "5" }, { sidebarButton: true }, { replaceBuiltIn: "yes" }, { liveButton: 0 }, { preload: null }, { engineMode: "gpu" },
     { nodePath: "a\nb" }, { revision: 3 }, { unknown: true },
   ]) assert.throws(() => parseSettingsPatch(bad), Error, JSON.stringify(bad));
@@ -42,6 +77,9 @@ test("saved settings round-trip and refuse malformed records", () => {
   assert.deepEqual(parseSettings(JSON.parse(JSON.stringify(DEFAULT_SETTINGS))), DEFAULT_SETTINGS);
   assert.deepEqual(parseSettings({ revision: 7, language: "ja-JP" }), { ...DEFAULT_SETTINGS, revision: 7, language: "ja-JP" });
   assert.deepEqual(parseSettings({ revision: 2, sidebarButton: true }), { ...DEFAULT_SETTINGS, revision: 2 }, "a 0.1.0 file still loads");
+  assert.equal(DEFAULT_SETTINGS.precision, "int8", "the compact model stays the default");
+  assert.equal(parseSettings({ revision: 4, latency: "320" }).precision, "int8", "a 0.2.0 file, which has no precision, still loads");
+  assert.equal(parseSettings({ revision: 5, precision: "fp32" }).precision, "fp32");
   assert.equal(DEFAULT_SETTINGS.replaceBuiltIn, true);
   assert.equal(DEFAULT_SETTINGS.liveButton, false);
   assert.throws(() => parseSettings({ language: "ja-JP" }));

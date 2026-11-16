@@ -1,5 +1,6 @@
-/** Worker thread: verify and unpack one pinned package without blocking the host
- * server. Decompression is CPU-bound, so it must not run on the server's thread.
+/** Worker thread: verify and unpack one pinned package, or verify one pinned file
+ * that was fetched on its own, without blocking the host server. Decompression
+ * and hashing are CPU-bound, so they must not run on the server's thread.
  *
  * Only whitelisted regular files are written, each under its own fixed name in a
  * fresh private directory, so archive contents cannot choose a destination. The
@@ -22,6 +23,8 @@ export interface ExtractJob {
   /** Must not exist yet; created here and removed again on any failure. */
   destination: string;
 }
+/** Check one already-downloaded file against its pinned size and digest. */
+export interface VerifyJob { verify: string; name: string; bytes: number; sha256: string }
 export type ExtractMessage =
   | { type: "progress"; done: number; total: number }
   | { type: "done" }
@@ -88,7 +91,31 @@ async function extract(job: ExtractJob): Promise<void> {
   post({ type: "progress", done: total, total });
 }
 
-if (parentPort) {
+async function verify(job: VerifyJob): Promise<void> {
+  const total = fs.statSync(job.verify).size;
+  if (total !== job.bytes) throw new Error(`${job.name} has an unexpected size.`);
+  const hash = createHash("sha256");
+  let done = 0;
+  let reported = 0;
+  for await (const chunk of fs.createReadStream(job.verify, { highWaterMark: 1 << 20 })) {
+    const buffer = chunk as Buffer;
+    hash.update(buffer);
+    done += buffer.length;
+    const now = Date.now();
+    if (now - reported > 250) { reported = now; post({ type: "progress", done, total }); }
+  }
+  if (done !== job.bytes || hash.digest("hex") !== job.sha256) {
+    throw new Error(`${job.name} does not match its published checksum. It was not installed.`);
+  }
+  post({ type: "progress", done: total, total });
+}
+
+if (parentPort && "verify" in (workerData as ExtractJob | VerifyJob)) {
+  verify(workerData as VerifyJob).then(
+    () => post({ type: "done" }),
+    error => post({ type: "error", message: error instanceof Error ? error.message : String(error) }),
+  );
+} else if (parentPort) {
   const job = workerData as ExtractJob;
   extract(job).then(
     () => post({ type: "done" }),

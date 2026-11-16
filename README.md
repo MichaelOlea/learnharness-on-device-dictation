@@ -58,10 +58,14 @@ works offline.
    | What | Size | From |
    | --- | --- | --- |
    | Speech engine (sherpa-onnx + ONNX Runtime, for your platform) | 8–14 MB | registry.npmjs.org |
-   | Nemotron 3.5 ASR model, int8 | 475 MB | github.com (k2-fsa/sherpa-onnx releases) |
+   | Nemotron 3.5 ASR model, compact (8-bit) | 475 MB | github.com (k2-fsa/sherpa-onnx releases) |
 
    Both are checked against pinned checksums. Unpacking takes about a minute; installing
    needs ~1.2 GB of free disk (0.7 GB afterwards). Then press **Dictate** again.
+
+   The compact model is the default and suits most computers. A full-precision version
+   of the same model (2.59 GB, from huggingface.co) can be chosen later in the settings;
+   see [Settings](#settings).
 
 **Updating:** replace only `dist/`, then restart LearnHarness. Downloads and settings
 live in the sibling `data/` folder and are kept.
@@ -94,9 +98,10 @@ Open **Settings → On-device dictation**.
 | --- | --- | --- |
 | Replace built-in dictation | on | Off returns the Dictate button to Deepgram. |
 | Language | same as LearnHarness | Or detect automatically, or pin one of 40 locales. |
-| Responsiveness | 0.56 s | Model variant: 0.16, 0.32, 0.56 or 1.1 s steps. Larger is more accurate and uses less CPU; each is its own 475 MB download. |
+| Responsiveness | 0.56 s | Model variant: 0.16, 0.32, 0.56 or 1.1 s steps. Larger is more accurate and uses less CPU; each is its own download (475 MB compact, 2.59 GB full precision). |
+| Model size and precision | Compact | **Compact** is the 8-bit model (recommended). **Full precision** is the same model without 8-bit rounding, which can make it more accurate: a 2.59 GB download from huggingface.co, at least 2.5 GB of memory and more CPU. Both can stay installed, so switching back downloads nothing. |
 | Load the model when LearnHarness starts | on | Makes the first dictation instant. |
-| Release the model after idle minutes | 30 | The loaded model uses about 1 GB of memory. 0 keeps it loaded. |
+| Release the model after idle minutes | 30 | The loaded model uses about 1 GB of memory (compact) or at least 2.5 GB (full precision). 0 keeps it loaded. |
 | CPU threads | automatic | Half your cores, at most four. |
 | Where the speech engine runs | automatic | Inside LearnHarness, or a separate Node.js process (needed on macOS). |
 | Node.js path | found automatically | For the separate-process engine. |
@@ -118,6 +123,9 @@ Open **Settings → On-device dictation**.
 - ~1 GB of free memory while the model is loaded. On a slow 2-core test machine the
   default model needed about 0.6 s of one core per second of speech, so it keeps up;
   the 0.16 s variant did not.
+- The optional full-precision model needs 2.6 GB of disk, at least 2.5 GB of free
+  memory and a faster processor. Its speed and accuracy have not been measured by this
+  project; if text falls behind, switch back to Compact.
 
 ## Privacy
 
@@ -125,8 +133,9 @@ Audio goes from the LearnHarness window to this plugin's backend inside the same
 (over LearnHarness's local plugin bridge), is transcribed by a library running on your
 computer, and is discarded; it is never written to disk. With the replacement on,
 LearnHarness's Deepgram token route is not called and no connection to Deepgram is
-opened. The only network requests the plugin itself makes are the two downloads above,
-and only when you ask for them.
+opened. The only network requests the plugin itself makes are the two downloads above
+(the model comes from huggingface.co instead of github.com if you choose full
+precision), and only when you ask for them.
 
 ## Testing status
 
@@ -135,7 +144,8 @@ and only when you ask for them.
 | Linux x64, the owner's own computer | Works (reported by the owner) |
 | Linux x64, LearnHarness 0.6.1 run from source, real Dictate button, real model, Chromium with a WAV file as microphone | Automated tests pass (`tests/e2e/app.e2e.ts`) |
 | Linux x64, real model and installer | Automated tests pass (`tests/e2e/real.e2e.ts`, `tests/e2e/browser.e2e.ts`) |
-| Unit and integration tests (72) | Pass in CI |
+| Unit and integration tests (85) | Pass in CI |
+| Full-precision model, on any system | **Not tested yet** with the real files — its installer path is covered only by tests with small stand-in files |
 | Windows, macOS, packaged desktop app on those systems | **Not tested yet** — reports welcome |
 
 ## Troubleshooting
@@ -148,7 +158,7 @@ and only when you ask for them.
 - **Windows: "The specified module could not be found"** — install the current Microsoft
   Visual C++ Redistributable.
 - **Text is late or dictation stops as "too slow"** — choose a larger Responsiveness
-  step or raise CPU threads.
+  step or raise CPU threads. If you chose the full-precision model, go back to Compact.
 - **The download fails behind a proxy or offline** — open the plugin's settings, expand
   **Install without a download**, fetch the listed files elsewhere, put them in the
   folder shown (`<plugins directory>/on-device-dictation/data/downloads/`) and choose

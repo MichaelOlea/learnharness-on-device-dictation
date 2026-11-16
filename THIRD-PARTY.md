@@ -26,6 +26,7 @@ verified against the checksums pinned in `src/contract.ts`.
 | [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) Node addon (`sherpa-onnx-<platform>`) | 2.0.1 | Apache-2.0 | registry.npmjs.org |
 | [ONNX Runtime](https://github.com/microsoft/onnxruntime), inside that package | 1.28.2 | MIT | registry.npmjs.org |
 | [NVIDIA Nemotron 3.5 ASR Streaming 0.6B](https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b), int8 ONNX export by the sherpa-onnx project (`sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-<N>ms-int8-2026-06-11`) | 2026-06-11 | [OpenMDW-1.1](https://openmdw.ai/license/1-1/) | github.com/k2-fsa/sherpa-onnx releases (`asr-models`) |
+| The same model, unquantized (fp32) ONNX export, only if you choose **Full precision** (`sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-<N>ms-2026-06-11`) | 2026-06-11 | [OpenMDW-1.1](https://openmdw.ai/license/1-1/) | huggingface.co/csukuangfj2 (the sherpa-onnx maintainer's account), pinned to a commit |
 
 By downloading the model you accept NVIDIA's licence terms for it.
 

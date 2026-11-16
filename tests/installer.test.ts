@@ -1,5 +1,6 @@
 /** Installer behaviour against a local HTTP server and small synthetic packages
- * built with the system tar/bzip2/gzip. Uses the built extract worker. */
+ * built with the system tar/bzip2/gzip, plus a model published as separate
+ * files. Uses the built extract worker. */
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
@@ -10,7 +11,7 @@ import os from "node:os";
 import path from "node:path";
 import test, { after, before } from "node:test";
 import { fileURLToPath } from "node:url";
-import type { InstallProgress, ModelPackage, RuntimePackage } from "../src/contract.ts";
+import type { ArchiveModel, InstallProgress, LooseModel, RuntimePackage } from "../src/contract.ts";
 import { Installer } from "../src/installer.ts";
 
 const extractScript = fileURLToPath(new URL("../dist/extract-worker.cjs", import.meta.url));
@@ -42,11 +43,24 @@ function buildRuntimeArchive(): Buffer {
   for (const name of ["sherpa-onnx.node", "libonnxruntime.so", "package.json", "index.js"]) fs.writeFileSync(path.join(root, "package", name), `content of ${name}`);
   return execFileSync("tar", ["-czf", "-", "-C", root, "package"], { maxBuffer: 1 << 28 });
 }
-function modelPackage(archive: Buffer, name = "tiny-model.tar.bz2"): ModelPackage {
+function modelPackage(archive: Buffer, name = "tiny-model.tar.bz2"): ArchiveModel {
   served.set(`/${name}`, archive);
   return {
-    latency: "560", directory: MODEL_DIR, archive: name, url: `${origin}/${name}`, bytes: archive.length, sha256: sha256(archive),
+    latency: "560", precision: "int8", directory: MODEL_DIR, archive: name, url: `${origin}/${name}`, bytes: archive.length, sha256: sha256(archive),
     files: Object.entries(MODEL_FILES).map(([file, body]) => ({ name: file, bytes: body.length, sha256: sha256(body) })),
+    entry: { encoder: "encoder.int8.onnx", decoder: "decoder.int8.onnx", joiner: "joiner.int8.onnx", tokens: "tokens.txt" },
+  };
+}
+const LOOSE_DIR = "tiny-full-model";
+// A graph with its weights in a second file, as large unquantized exports are published.
+const LOOSE_FILES = { "encoder.onnx": Buffer.from("encoder graph"), "encoder.data": randomBytes(300_000), "decoder.onnx": Buffer.from("full decoder"), "joiner.onnx": Buffer.from("full joiner"), "tokens.txt": Buffer.from("a 0\nb 1\n") };
+const LOOSE_NAMES = Object.keys(LOOSE_FILES).sort();
+function looseModel(): LooseModel {
+  for (const [name, body] of Object.entries(LOOSE_FILES)) served.set(`/full/${name}`, body);
+  return {
+    latency: "560", precision: "fp32", directory: LOOSE_DIR, baseUrl: `${origin}/full/`,
+    files: Object.entries(LOOSE_FILES).map(([name, body]) => ({ name, bytes: body.length, sha256: sha256(body) })),
+    entry: { encoder: "encoder.onnx", decoder: "decoder.onnx", joiner: "joiner.onnx", tokens: "tokens.txt" },
   };
 }
 function runtimePackage(archive: Buffer): RuntimePackage {
@@ -298,4 +312,129 @@ test("reports HTTP failures and unexpected sizes without installing", async () =
   result = await finished;
   assert.equal(result.phase, "error");
   assert.match(result.error ?? "", /unexpected size/);
+});
+
+test("installs a model published as separate files, each verified", async () => {
+  const data = fresh();
+  const model = looseModel();
+  const runtime = runtimePackage(buildRuntimeArchive());
+  const run = installer(data);
+  assert.deepEqual(run.installer.modelDownloads(model).map(item => item.file), Object.keys(LOOSE_FILES).map(name => path.join(LOOSE_DIR, name)));
+  requests.length = 0;
+  const finished = run.finished();
+  run.installer.start(runtime, model);
+  assert.equal((await finished).phase, "done");
+  assert.deepEqual(run.phases, ["downloading-engine", "unpacking-engine", "downloading-model", "unpacking-model", "done"]);
+  assert.deepEqual(requests.filter(request => request.url.startsWith("/full/")).map(request => request.url).sort(), LOOSE_NAMES.map(name => `/full/${name}`));
+  assert.equal(run.installer.modelInstalled(model), true);
+  assert.deepEqual(run.installer.modelDownloads(model), []);
+  assert.deepEqual(fs.readdirSync(run.installer.modelDirectory(model)).sort(), [...LOOSE_NAMES, "installed.json"].sort());
+  for (const [name, body] of Object.entries(LOOSE_FILES)) assert.ok(fs.readFileSync(path.join(run.installer.modelDirectory(model), name)).equals(body), name);
+  assert.deepEqual(fs.readdirSync(run.installer.downloads), [], "nothing is left in the downloads folder");
+  assert.deepEqual(fs.readdirSync(path.join(data, "models")), [LOOSE_DIR], "no temporary directories remain");
+});
+
+test("separate files resume, and files already fetched are not fetched again", async () => {
+  const data = fresh();
+  const model = looseModel();
+  // Largest first, so the interrupted file is the first one requested.
+  const largestFirst = { ...model, files: [...model.files].sort((a, b) => b.bytes - a.bytes) };
+  const runtime = runtimePackage(buildRuntimeArchive());
+  const run = installer(data);
+  // Install the engine first so only a model download is cut.
+  let finished = run.finished();
+  run.installer.start(runtime, modelPackage(buildModelArchive()));
+  assert.equal((await finished).phase, "done");
+  behaviour.cutAfter = 2000;
+  try {
+    finished = run.finished();
+    run.installer.start(runtime, largestFirst);
+    assert.equal((await finished).phase, "error");
+  } finally { behaviour.cutAfter = 0; }
+  assert.equal(run.installer.modelInstalled(model), false);
+  const staging = run.installer.downloadPath(LOOSE_DIR);
+  assert.deepEqual(fs.readdirSync(staging), ["encoder.data.fetched.part"]);
+  assert.equal(fs.statSync(path.join(staging, "encoder.data.fetched.part")).size, 2000);
+  // As if an earlier run had already brought one of the other files down.
+  fs.writeFileSync(path.join(staging, "decoder.onnx.fetched"), LOOSE_FILES["decoder.onnx"]);
+  assert.deepEqual(run.installer.modelDownloads(model).map(item => path.basename(item.file)).sort(), LOOSE_NAMES.filter(name => name !== "decoder.onnx"));
+  requests.length = 0;
+  finished = run.finished();
+  run.installer.start(runtime, model);
+  assert.equal((await finished).phase, "done");
+  assert.equal(requests.find(request => request.url === "/full/encoder.data")?.range, "bytes=2000-");
+  assert.equal(requests.some(request => request.url === "/full/decoder.onnx"), false, "a file fetched earlier is not fetched again");
+  assert.equal(run.installer.modelInstalled(model), true);
+  for (const [name, body] of Object.entries(LOOSE_FILES)) assert.ok(fs.readFileSync(path.join(run.installer.modelDirectory(model), name)).equals(body), name);
+  assert.deepEqual(fs.readdirSync(run.installer.downloads), []);
+});
+
+test("a separate file that fails its checksum is refused; only that fetched file is deleted", async () => {
+  const data = fresh();
+  const good = looseModel();
+  const model = { ...good, files: good.files.map(file => (file.name === "joiner.onnx" ? { ...file, sha256: "0".repeat(64) } : file)) };
+  const run = installer(data);
+  let finished = run.finished();
+  run.installer.start(runtimePackage(buildRuntimeArchive()), model);
+  const result = await finished;
+  assert.equal(result.phase, "error");
+  assert.match(result.error ?? "", /joiner\.onnx does not match/);
+  assert.equal(run.installer.modelInstalled(model), false);
+  assert.equal(fs.existsSync(run.installer.modelDirectory(model)), false);
+  assert.deepEqual(fs.readdirSync(path.join(data, "models")), []);
+  assert.deepEqual(fs.readdirSync(run.installer.downloadPath(LOOSE_DIR)).sort(), LOOSE_NAMES.filter(name => name !== "joiner.onnx").map(name => `${name}.fetched`));
+  // With the right pin, only the refused file is fetched again.
+  requests.length = 0;
+  finished = run.finished();
+  run.installer.start(runtimePackage(buildRuntimeArchive()), good);
+  assert.equal((await finished).phase, "done");
+  assert.deepEqual(requests.map(request => request.url), ["/full/joiner.onnx"]);
+});
+
+test("separate files the learner supplied are used; a wrong one is reported and kept", async () => {
+  const data = fresh();
+  const model = looseModel();
+  const runtimeArchive = buildRuntimeArchive();
+  const runtime = runtimePackage(runtimeArchive);
+  const run = installer(data);
+  const staging = run.installer.downloadPath(LOOSE_DIR);
+  fs.mkdirSync(staging, { recursive: true });
+  fs.writeFileSync(run.installer.downloadPath(run.installer.runtimeArchive(runtime)), runtimeArchive);
+  for (const [name, body] of Object.entries(LOOSE_FILES)) fs.writeFileSync(path.join(staging, name), body);
+  // Same size, different content: only the checksum can tell.
+  const wrong = Buffer.from(LOOSE_FILES["encoder.data"]);
+  wrong[10] = wrong[10]! ^ 0xff;
+  fs.writeFileSync(path.join(staging, "encoder.data"), wrong);
+  requests.length = 0;
+  let finished = run.finished();
+  run.installer.start(runtime, model);
+  const result = await finished;
+  assert.equal(result.phase, "error");
+  assert.match(result.error ?? "", /encoder\.data does not match/);
+  assert.deepEqual(fs.readdirSync(staging).sort(), LOOSE_NAMES, "nothing the learner supplied was deleted or moved");
+  fs.writeFileSync(path.join(staging, "encoder.data"), LOOSE_FILES["encoder.data"]);
+  finished = run.finished();
+  run.installer.start(runtime, model);
+  assert.equal((await finished).phase, "done");
+  assert.deepEqual(requests, [], "nothing was fetched");
+  assert.equal(run.installer.modelInstalled(model), true);
+  assert.equal(fs.existsSync(staging), false, "supplied model files are moved into place, not copied");
+});
+
+test("a link posing as a supplied model file is not used", async () => {
+  const data = fresh();
+  const model = looseModel();
+  const run = installer(data);
+  const staging = run.installer.downloadPath(LOOSE_DIR);
+  fs.mkdirSync(staging, { recursive: true });
+  const outside = path.join(scratch, "outside-tokens.txt");
+  fs.writeFileSync(outside, LOOSE_FILES["tokens.txt"]);
+  fs.symlinkSync(outside, path.join(staging, "tokens.txt"));
+  requests.length = 0;
+  const finished = run.finished();
+  run.installer.start(runtimePackage(buildRuntimeArchive()), model);
+  assert.equal((await finished).phase, "done");
+  assert.ok(requests.some(request => request.url === "/full/tokens.txt"), "the real file was fetched instead");
+  assert.equal(fs.lstatSync(path.join(run.installer.modelDirectory(model), "tokens.txt")).isFile(), true);
+  assert.equal(fs.existsSync(outside), true);
 });

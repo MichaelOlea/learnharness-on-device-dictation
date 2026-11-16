@@ -61,12 +61,31 @@ The plugin wraps `window.fetch` and `window.WebSocket` while it is enabled:
   download with stall detection, archive and per-file SHA checks, streaming unpack of
   only the expected files into a fresh directory, atomic rename. Files placed in
   `data/downloads/` by hand are used instead of fetched.
+  A model can also be published as separate files instead of one archive (the
+  full-precision export is). Those are fetched one by one into
+  `data/downloads/<model directory>/` as `<name>.fetched`, each is hashed on the worker
+  thread, and only when all match are they moved into a fresh directory that is then
+  renamed into place. A file the learner put there under its plain name is used
+  instead, and is never deleted if it fails its checksum.
 
 ## Pinned downloads
 
 `src/contract.ts` lists, per platform, the `sherpa-onnx-<platform>@2.0.1` npm tarball
 with its npm integrity hash, and per latency the sherpa-onnx export of the NVIDIA model
 with the archive SHA-256 and the SHA-256 and size of each file used.
+
+The model catalog is keyed by latency and by precision (`modelFor(latency, precision)`):
+
+- `int8` — `MODELS`, the compact 8-bit archives from the sherpa-onnx GitHub release.
+  One exists for every latency, and it is the default.
+- `fp32` — `FULL_PRECISION_MODELS`, the unquantized export, listed file by file with a
+  Hugging Face URL pinned to a commit. A latency without an entry is simply not offered
+  in full precision, and the "Model size and precision" setting is hidden if the
+  table is empty. The 2.45 GB weights file is byte-identical in all four packages,
+  but each package still installs its own copy.
+
+Both precisions install into their own directory, so switching back and forth does not
+download anything twice.
 
 ## Source layout
 

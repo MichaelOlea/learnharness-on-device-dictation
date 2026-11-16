@@ -7,8 +7,9 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import type { PluginBackendContext } from "learnharness-plugin-api";
 import {
-  DEFAULT_SETTINGS, LATENCIES, MODELS, RUNTIMES, effectiveThreads, parseSettings, parseSettingsPatch, sessionLanguage,
-  type InstallProgress, type Settings, type Status,
+  DEFAULT_SETTINGS, LATENCIES, LATENCY_LABELS, MODELS, PRECISIONS, PRECISION_NAMES, RUNTIMES, effectiveThreads, modelFor, parseSettings,
+  parseSettingsPatch, sessionLanguage,
+  type InstallProgress, type ModelPackage, type Settings, type Status,
 } from "./contract.ts";
 import { EngineHost, type EngineConfig } from "./engine-host.ts";
 import { Installer } from "./installer.ts";
@@ -28,6 +29,11 @@ export function activate(ctx: PluginBackendContext): () => void {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     settings = { ...DEFAULT_SETTINGS };
   }
+  // A precision this version does not publish for the saved latency (a file from
+  // another version, or one edited by hand) falls back to the compact model,
+  // which exists for every latency. Only the copy in memory changes.
+  if (!modelFor(settings.latency, settings.precision)) settings = { ...settings, precision: "int8" };
+  const currentModel = (): ModelPackage => modelFor(settings.latency, settings.precision) ?? MODELS[settings.latency];
 
   const platformKey = `${process.platform}-${process.arch}`;
   const runtime = RUNTIMES[platformKey];
@@ -59,17 +65,17 @@ export function activate(ctx: PluginBackendContext): () => void {
 
   function engineConfig(): EngineConfig {
     if (!runtime) throw new Error(`On-device dictation does not support this computer (${platformKey}).`);
-    const model = MODELS[settings.latency];
+    const model = currentModel();
     if (!installer.runtimeInstalled(runtime) || !installer.modelInstalled(model)) {
       throw new Error("The speech engine and model are not installed yet. Open this plugin's settings to download them.");
     }
     const directory = installer.modelDirectory(model);
     return {
       addon: path.join(installer.runtimeDirectory(runtime), runtime.addon),
-      encoder: path.join(directory, "encoder.int8.onnx"),
-      decoder: path.join(directory, "decoder.int8.onnx"),
-      joiner: path.join(directory, "joiner.int8.onnx"),
-      tokens: path.join(directory, "tokens.txt"),
+      encoder: path.join(directory, model.entry.encoder),
+      decoder: path.join(directory, model.entry.decoder),
+      joiner: path.join(directory, model.entry.joiner),
+      tokens: path.join(directory, model.entry.tokens),
       threads: effectiveThreads(settings, cores),
       latencyMs: Number(settings.latency),
     };
@@ -80,12 +86,14 @@ export function activate(ctx: PluginBackendContext): () => void {
   });
 
   function status(): Status {
-    const model = MODELS[settings.latency];
+    const model = currentModel();
     const engineInstalled = runtime ? installer.runtimeInstalled(runtime) : false;
     const modelInstalled = installer.modelInstalled(model);
     const pending: Status["pending"] = [];
     if (runtime && !engineInstalled) pending.push({ name: "Speech engine (sherpa-onnx with ONNX Runtime)", url: runtime.url, bytes: runtime.bytes, file: installer.runtimeArchive(runtime) });
-    if (!modelInstalled) pending.push({ name: `NVIDIA Nemotron 3.5 ASR model (${settings.latency} ms)`, url: model.url, bytes: model.bytes, file: model.archive });
+    // A model published as separate files gives one entry per file, all under one name.
+    const modelName = `NVIDIA Nemotron 3.5 ASR model (${settings.latency} ms, ${PRECISION_NAMES[model.precision]})`;
+    for (const item of installer.modelDownloads(model)) pending.push({ name: modelName, ...item });
     const state: Status["engine"] = { state: engine.state };
     if (engine.mode) state.mode = engine.mode;
     if (engine.error) state.error = engine.error;
@@ -94,7 +102,14 @@ export function activate(ctx: PluginBackendContext): () => void {
       settings: { ...settings },
       platform: { key: platformKey, supported: runtime !== undefined },
       engineInstalled, modelInstalled,
-      installedModels: LATENCIES.filter(latency => installer.modelInstalled(MODELS[latency])),
+      installedModels: LATENCIES.filter(latency => {
+        const candidate = modelFor(latency, settings.precision);
+        return candidate !== undefined && installer.modelInstalled(candidate);
+      }),
+      installedPrecisions: PRECISIONS.filter(precision => {
+        const candidate = modelFor(settings.latency, precision);
+        return candidate !== undefined && installer.modelInstalled(candidate);
+      }),
       install: installer.state,
       engine: state,
       sessionActive: sessions.active,
@@ -123,7 +138,10 @@ export function activate(ctx: PluginBackendContext): () => void {
       if (!keys.some(key => next[key] !== settings[key])) return status();
       if (settings.revision === Number.MAX_SAFE_INTEGER) throw new Error("Settings revision limit reached.");
       next.revision = settings.revision + 1;
-      const reload = (["latency", "threads", "engineMode", "nodePath"] as const).some(key => next[key] !== settings[key]);
+      if (!modelFor(next.latency, next.precision)) {
+        throw new Error(`The ${PRECISION_NAMES[next.precision]} model is not published for “${LATENCY_LABELS[next.latency]}”. Choose another responsiveness step, or the compact model.`);
+      }
+      const reload = (["latency", "precision", "threads", "engineMode", "nodePath"] as const).some(key => next[key] !== settings[key]);
       if (reload && sessions.active) throw new Error("Stop dictating before changing this setting.");
       save(next);
       // The loaded model no longer matches; the next dictation loads the new one.
@@ -135,14 +153,14 @@ export function activate(ctx: PluginBackendContext): () => void {
     ctx.handle("install", () => {
       assertActive();
       if (!runtime) throw new Error(`On-device dictation does not support this computer (${platformKey}).`);
-      installer.start(runtime, MODELS[settings.latency]);
+      installer.start(runtime, currentModel());
       return status();
     }),
     ctx.handle("install-cancel", () => { assertActive(); installer.cancel(); return status(); }),
     // Load the model ahead of the first dictation. Failures show up in status.
     ctx.handle("warm", () => {
       assertActive();
-      if (runtime && installer.runtimeInstalled(runtime) && installer.modelInstalled(MODELS[settings.latency])) {
+      if (runtime && installer.runtimeInstalled(runtime) && installer.modelInstalled(currentModel())) {
         engine.ensure(engineConfig()).catch(() => undefined);
       }
       return status();
