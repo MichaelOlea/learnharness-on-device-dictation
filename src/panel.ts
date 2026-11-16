@@ -240,7 +240,6 @@ function settingsRows(status: Status, change: (patch: SettingsPatch) => Promise<
   const installed = new Set<Latency>(status.installedModels);
   const installedPrecisions = new Set<Precision>(status.installedPrecisions);
   const size = modelSize(selectedModel(settings));
-  const compact = modelSize(MODELS[settings.latency]);
   // Only what can actually be installed is offered; with one precision there is nothing to choose.
   const precisions = offeredPrecisions();
   const precisionRow: PluginSettingsSchema["rows"] = precisions.length < 2 ? [] : [{
@@ -248,10 +247,13 @@ function settingsRows(status: Status, change: (patch: SettingsPatch) => Promise<
     description: (() => {
       const full = modelFor(settings.latency, "fp32");
       if (!full) return "Only the compact model is published for this responsiveness step.";
-      return `Compact suits most computers. Full precision is the model without 8-bit rounding, which can make it more accurate; it is a ${formatBytes(modelSize(full).download)} download instead of ${formatBytes(compact.download)}, uses ${PRECISION_MEMORY.fp32} of memory instead of ${PRECISION_MEMORY.int8}, and needs more CPU. If text falls behind your speech, go back to Compact.`;
+      return `Full precision can be more accurate, but needs ${PRECISION_MEMORY.fp32} of memory and more CPU. If text falls behind, go back to Compact.`;
     })(),
     options: precisions.filter(precision => modelFor(settings.latency, precision))
-      .map(precision => ({ value: precision, label: `${PRECISION_LABELS[precision]}${installedPrecisions.has(precision) ? "" : " — not downloaded"}` })),
+      .map(precision => {
+        const download = formatBytes(modelSize(modelFor(settings.latency, precision)!).download);
+        return { value: precision, label: `${PRECISION_LABELS[precision]} — ${installedPrecisions.has(precision) ? "installed" : download}` };
+      }),
     onChange: precision => change({ precision: precision as Precision }),
   }];
   const latencyNote = (latency: Latency): string => {

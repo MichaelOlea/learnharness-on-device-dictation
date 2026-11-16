@@ -73,11 +73,14 @@ test("the precision choice appears only when there is something to choose", asyn
   // Offered for this latency only if a full-precision package exists for it.
   const here = FULL_PRECISION_MODELS[DEFAULT_SETTINGS.latency];
   assert.deepEqual(row.options.map(option => option.value), here ? ["int8", "fp32"] : ["int8"]);
-  assert.equal(row.options[0]!.label, PRECISION_LABELS.int8, "the installed, recommended choice comes first");
+  assert.equal(row.options[0]!.label, `${PRECISION_LABELS.int8} — installed`, "the installed, recommended choice comes first");
   assert.match(row.options[0]!.label, /recommended/);
+  // The host sizes the dropdown to its longest choice; long ones crush the row's label.
+  for (const option of row.options) assert.ok(option.label.length <= 40, option.label);
+  assert.ok((row.description ?? "").length <= 140, row.description);
   if (here) {
-    assert.equal(row.options[1]!.label, `${PRECISION_LABELS.fp32} — not downloaded`);
-    assert.ok(row.description?.includes(`a ${formatBytes(modelSize(here).download)} download instead of 475 MB`));
+    assert.equal(row.options[1]!.label, `${PRECISION_LABELS.fp32} — ${formatBytes(modelSize(here).download)}`);
+    assert.match(row.description ?? "", /at least 2\.5 GB of memory/);
     await row.onChange("fp32");
     assert.deepEqual(page.calls, [{ operation: "set-settings", input: { precision: "fp32" } }]);
   } else {

@@ -145,9 +145,10 @@ export function isPrecision(value: unknown): value is Precision {
   return typeof value === "string" && (PRECISIONS as readonly string[]).includes(value);
 }
 export const PRECISION_NAMES: Readonly<Record<Precision, string>> = { int8: "compact", fp32: "full precision" };
+/** Dropdown choices; kept short because the host sizes the control to its longest one. */
 export const PRECISION_LABELS: Readonly<Record<Precision, string>> = {
-  int8: "Compact — 8-bit, smallest download, least memory and CPU (recommended)",
-  fp32: "Full precision — 32-bit, much larger and slower, can be more accurate",
+  int8: "Compact (recommended)",
+  fp32: "Full precision",
 };
 /** Memory the loaded model occupies. int8 was measured; the fp32 figure is the
  * size of its weights, which is the least it can take. */
