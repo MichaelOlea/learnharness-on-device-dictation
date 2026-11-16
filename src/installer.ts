@@ -2,15 +2,25 @@
  *
  * Nothing here runs until the learner explicitly asks for it. Downloads resume,
  * a package placed in the downloads folder by hand is used instead of fetching,
- * and nothing is installed unless its published digest matches. */
+ * and nothing is installed unless its published digest matches.
+ *
+ * A model arrives either as one archive (unpacked by the extract worker) or as
+ * separate files, which are fetched one by one into downloads/<model directory>/,
+ * each verified, and then moved into place together. */
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { Worker } from "node:worker_threads";
-import { RUNTIME_VERSION, type InstallProgress, type ModelPackage, type RuntimePackage } from "./contract.ts";
-import type { ExtractJob, ExtractMessage } from "./extract-worker.ts";
+import {
+  RUNTIME_VERSION, isArchiveModel, modelSize,
+  type InstallProgress, type LooseModel, type ModelPackage, type PackageFile, type RuntimePackage,
+} from "./contract.ts";
+import type { ExtractJob, ExtractMessage, VerifyJob } from "./extract-worker.ts";
 
 const MARKER = "installed.json";
+/** Suffix of a separately published file this plugin fetched itself, as opposed
+ * to one the learner put in the downloads folder under its plain name. */
+const FETCHED = ".fetched";
 /** A connection that delivers nothing for this long is treated as dead. */
 const STALL_MS = 60_000;
 
@@ -66,6 +76,27 @@ export class Installer {
   modelDirectory(model: ModelPackage): string { return path.join(this.models, model.directory); }
   downloadPath(file: string): string { return path.join(this.downloads, file); }
   runtimeArchive(pkg: RuntimePackage): string { return `${pkg.name}-${RUNTIME_VERSION}.tgz`; }
+  /** Where a separately published model file is kept until it is installed,
+   * relative to the downloads folder. */
+  stagedFile(model: LooseModel, file: PackageFile): string { return path.join(model.directory, file.name); }
+
+  /** A complete copy of a separately published file that is ready to verify:
+   * one the learner supplied, else one fetched earlier. */
+  private staged(model: LooseModel, file: PackageFile): { path: string; supplied: boolean } | undefined {
+    const supplied = this.downloadPath(this.stagedFile(model, file));
+    for (const candidate of [{ path: supplied, supplied: true }, { path: supplied + FETCHED, supplied: false }]) {
+      const stat = exists(candidate.path);
+      if (stat?.isFile() && stat.size === file.bytes) return candidate;
+    }
+    return undefined;
+  }
+  /** What installing this model would still fetch. */
+  modelDownloads(model: ModelPackage): { url: string; bytes: number; file: string }[] {
+    if (this.modelInstalled(model)) return [];
+    if (isArchiveModel(model)) return [{ url: model.url, bytes: model.bytes, file: model.archive }];
+    return model.files.filter(file => !this.staged(model, file))
+      .map(file => ({ url: model.baseUrl + file.name, bytes: file.bytes, file: this.stagedFile(model, file) }));
+  }
 
   runtimeInstalled(pkg: RuntimePackage): boolean {
     const directory = this.runtimeDirectory(pkg);
@@ -137,7 +168,8 @@ export class Installer {
         marker: { name: pkg.name, version: RUNTIME_VERSION, integrity: pkg.integrity },
       }, signal);
     }
-    if (!this.modelInstalled(model)) {
+    if (this.modelInstalled(model)) return;
+    if (isArchiveModel(model)) {
       await this.install({
         url: model.url, archive: model.archive, bytes: model.bytes, destination: this.modelDirectory(model),
         phases: ["downloading-model", "unpacking-model"],
@@ -147,16 +179,84 @@ export class Installer {
         },
         marker: { name: model.directory, sha256: model.sha256 },
       }, signal);
+    } else {
+      await this.installLoose(model, signal);
     }
+  }
+
+  /** Install a model published as separate files. */
+  private async installLoose(model: LooseModel, signal: AbortSignal): Promise<void> {
+    const staging = this.downloadPath(model.directory);
+    if (exists(staging)?.isSymbolicLink()) throw new Error(`Refusing to download into a symbolic link: ${staging}`);
+    fs.mkdirSync(staging, { recursive: true });
+    const total = modelSize(model).installed;
+
+    // Fetch whatever is not already there, as one progress bar over all files.
+    let before = 0;
+    for (const file of model.files) {
+      if (!this.staged(model, file)) {
+        const target = this.downloadPath(this.stagedFile(model, file)) + FETCHED;
+        await this.download(model.baseUrl + file.name, target, file.bytes, "downloading-model", signal, { before, total });
+      }
+      before += file.bytes;
+      signal.throwIfAborted();
+    }
+
+    // Verify every file before any of them is moved.
+    const sources: { file: PackageFile; path: string }[] = [];
+    before = 0;
+    this.report({ phase: "unpacking-model", done: 0, total });
+    for (const file of model.files) {
+      const source = this.staged(model, file);
+      if (!source) throw new Error(`${file.name} disappeared from the downloads folder. Start the installation again.`);
+      try {
+        await this.work({ verify: source.path, name: file.name, bytes: file.bytes, sha256: file.sha256 }, "unpacking-model", signal, { before, total });
+      } catch (error) {
+        // As with archives: what we fetched is useless and is fetched afresh next
+        // time; what the learner supplied is theirs to replace.
+        if (!source.supplied && !signal.aborted) fs.rmSync(source.path, { force: true });
+        throw error;
+      }
+      sources.push({ file, path: source.path });
+      before += file.bytes;
+    }
+
+    const destination = this.modelDirectory(model);
+    const temporary = `${destination}.tmp-${randomUUID()}`;
+    fs.mkdirSync(temporary, { recursive: false, mode: 0o700 });
+    const moved: { from: string; to: string }[] = [];
+    try {
+      for (const source of sources) {
+        const to = path.join(temporary, source.file.name);
+        await renameWithRetry(source.path, to);
+        moved.push({ from: source.path, to });
+      }
+      fs.writeFileSync(path.join(temporary, MARKER), JSON.stringify({
+        name: model.directory, files: model.files.map(file => ({ name: file.name, sha256: file.sha256 })), installedAt: new Date().toISOString(),
+      }) + "\n", { flag: "wx" });
+      removeTree(destination);
+      await renameWithRetry(temporary, destination);
+    } catch (error) {
+      // Put the verified files back so the next attempt need not fetch them again.
+      for (const move of moved) { try { fs.renameSync(move.to, move.from); } catch { /* removed with the directory below */ } }
+      removeTree(temporary);
+      throw error;
+    }
+    try { fs.rmdirSync(staging); } catch { /* something of the learner's is still in it */ }
   }
 
   private async ensureSpace(pkg: RuntimePackage, model: ModelPackage): Promise<void> {
     let needed = 0;
     if (!this.runtimeInstalled(pkg)) needed += pkg.bytes * 5;
-    if (!this.modelInstalled(model)) {
-      needed += model.files.reduce((sum, file) => sum + file.bytes, 0);
+    if (!this.modelInstalled(model) && isArchiveModel(model)) {
+      needed += modelSize(model).installed;
       const archive = exists(this.downloadPath(model.archive));
       if (!archive) needed += model.bytes - (exists(this.downloadPath(`${model.archive}.part`))?.size ?? 0);
+    } else if (!this.modelInstalled(model)) {
+      // Separate files are moved into place, so only what is not yet fetched counts.
+      for (const item of this.modelDownloads(model)) {
+        needed += item.bytes - Math.min(item.bytes, exists(this.downloadPath(item.file) + FETCHED + ".part")?.size ?? 0);
+      }
     }
     if (needed === 0 || typeof fs.promises.statfs !== "function") return;
     let free: number;
@@ -185,7 +285,7 @@ export class Installer {
     const temporary = `${step.destination}.tmp-${randomUUID()}`;
     this.report({ phase: step.phases[1], done: 0, total: step.bytes });
     try {
-      await this.extract({ ...step.job, archive, destination: temporary }, step.phases[1], signal);
+      await this.work({ ...step.job, archive, destination: temporary }, step.phases[1], signal);
     } catch (error) {
       removeTree(temporary);
       // A file we fetched that fails verification is useless; fetch it afresh next
@@ -200,11 +300,17 @@ export class Installer {
     if (!supplied) fs.rmSync(archive, { force: true });
   }
 
-  private async download(url: string, destination: string, bytes: number, phase: InstallProgress["phase"], signal: AbortSignal): Promise<void> {
+  /** Fetch one file, resuming a partial one. `span` places its progress inside
+   * a larger total when it is one of several files reported together. */
+  private async download(
+    url: string, destination: string, bytes: number, phase: InstallProgress["phase"], signal: AbortSignal,
+    span: { before: number; total: number } = { before: 0, total: bytes },
+  ): Promise<void> {
     const partial = `${destination}.part`;
     let offset = exists(partial)?.size ?? 0;
     if (offset >= bytes) { fs.rmSync(partial, { force: true }); offset = 0; }
-    this.report({ phase, done: offset, total: bytes });
+    const progress = (done: number) => this.report({ phase, done: span.before + done, total: span.total });
+    progress(offset);
 
     const stall = new AbortController();
     const combined = AbortSignal.any([signal, stall.signal]);
@@ -237,13 +343,13 @@ export class Installer {
         if (done > bytes) throw new Error("The download is larger than the published package. Nothing was installed.");
         await handle.write(chunk);
         const now = Date.now();
-        if (now - reported > 250) { reported = now; this.report({ phase, done, total: bytes }); }
+        if (now - reported > 250) { reported = now; progress(done); }
       }
       await handle.close();
       handle = undefined;
       if (done !== bytes) throw new Error("The download ended early. Start it again to resume where it stopped.");
       fs.renameSync(partial, destination);
-      this.report({ phase, done: bytes, total: bytes });
+      progress(bytes);
     } catch (error) {
       // Prefer the real cause over the generic abort error the transport throws.
       if (signal.aborted) throw signal.reason instanceof Error ? signal.reason : new Error("Installation cancelled.");
@@ -255,7 +361,8 @@ export class Installer {
     }
   }
 
-  private extract(job: ExtractJob, phase: InstallProgress["phase"], signal: AbortSignal): Promise<void> {
+  /** Run one unpack or verify job on the worker thread. */
+  private work(job: ExtractJob | VerifyJob, phase: InstallProgress["phase"], signal: AbortSignal, span?: { before: number; total: number }): Promise<void> {
     return new Promise((resolve, reject) => {
       const worker = new Worker(this.options.extractScript, { workerData: job });
       let settled = false;
@@ -271,12 +378,14 @@ export class Installer {
       };
       signal.addEventListener("abort", abort, { once: true });
       worker.on("message", (message: ExtractMessage) => {
-        if (message.type === "progress") { if (!settled) this.report({ phase, done: message.done, total: message.total }); }
+        if (message.type === "progress") {
+          if (!settled) this.report(span ? { phase, done: span.before + message.done, total: span.total } : { phase, done: message.done, total: message.total });
+        }
         else if (message.type === "done") settle();
         else settle(new Error(message.message));
       });
       worker.on("error", error => settle(error instanceof Error ? error : new Error(String(error))));
-      worker.on("exit", code => settle(new Error(`Unpacking stopped unexpectedly (code ${code}).`)));
+      worker.on("exit", code => settle(new Error(`Verifying or unpacking stopped unexpectedly (code ${code}).`)));
       if (signal.aborted) abort();
     });
   }

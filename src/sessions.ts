@@ -153,7 +153,7 @@ export class Sessions {
     else session.queue.push(pcm);
     if (this.lagMs(session) > MAX_LAG_MS) {
       this.cancelSession(session, "too-slow", session.started
-        ? "This computer cannot transcribe as fast as you speak with the current settings. Try a larger responsiveness step or more CPU threads."
+        ? "This computer cannot transcribe as fast as you speak with the current settings. Try a larger responsiveness step, more CPU threads, or the compact model if you chose full precision."
         : "The speech model took too long to load.");
     }
   }

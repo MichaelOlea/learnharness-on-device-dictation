@@ -117,9 +117,12 @@ export function mapHostLanguage(code: string | null | undefined): string {
 }
 
 /* ----------------------------------------------------------------------------
- * Model packages: the official sherpa-onnx int8 exports of the NVIDIA model, one
- * per streaming chunk size. Archive and file digests were computed from the
- * published release assets and are verified on every installation.
+ * Model packages: sherpa-onnx exports of the NVIDIA model, one per streaming
+ * chunk size and numeric precision. Every size and digest below was taken from
+ * the published files and is verified on every installation.
+ *
+ *   int8  the official release archives on github.com (k2-fsa/sherpa-onnx)
+ *   fp32  the unquantized export, published file by file on huggingface.co
  * -------------------------------------------------------------------------- */
 
 export const LATENCIES = ["160", "320", "560", "1120"] as const;
@@ -134,36 +137,106 @@ export const LATENCY_LABELS: Readonly<Record<Latency, string>> = {
   "1120": "Most accurate — text every 1.1 s, least CPU",
 };
 
-export interface PackageFile { name: string; bytes: number; sha256: string }
-export interface ModelPackage {
-  latency: Latency;
-  /** Top-level directory inside the archive and the installed directory name. */
-  directory: string;
-  archive: string;
-  url: string;
-  bytes: number;
-  sha256: string;
-  files: readonly PackageFile[];
+/** How the model's weights are stored. "int8" is the 8-bit quantized export;
+ * "fp32" is the model as NVIDIA trained it, about four times the size. */
+export const PRECISIONS = ["int8", "fp32"] as const;
+export type Precision = (typeof PRECISIONS)[number];
+export function isPrecision(value: unknown): value is Precision {
+  return typeof value === "string" && (PRECISIONS as readonly string[]).includes(value);
 }
+export const PRECISION_NAMES: Readonly<Record<Precision, string>> = { int8: "compact", fp32: "full precision" };
+/** Dropdown choices; kept short because the host sizes the control to its longest one. */
+export const PRECISION_LABELS: Readonly<Record<Precision, string>> = {
+  int8: "Compact (recommended)",
+  fp32: "Full precision",
+};
+/** Memory the loaded model occupies. int8 was measured; the fp32 figure is the
+ * size of its weights, which is the least it can take. */
+export const PRECISION_MEMORY: Readonly<Record<Precision, string>> = { int8: "about 1 GB", fp32: "at least 2.5 GB" };
+
+export interface PackageFile { name: string; bytes: number; sha256: string }
+interface ModelBase {
+  latency: Latency;
+  precision: Precision;
+  /** Installed directory name (and the top-level directory inside an archive). */
+  directory: string;
+  /** Every file installed, each with its pinned size and digest. */
+  files: readonly PackageFile[];
+  /** Which of `files` the recognizer is started with. */
+  entry: { encoder: string; decoder: string; joiner: string; tokens: string };
+}
+/** Published as one .tar.bz2 whose own digest is pinned too. */
+export interface ArchiveModel extends ModelBase { archive: string; url: string; bytes: number; sha256: string }
+/** Published as separate files, each fetched from `baseUrl` + its name. */
+export interface LooseModel extends ModelBase { baseUrl: string }
+export type ModelPackage = ArchiveModel | LooseModel;
+export function isArchiveModel(model: ModelPackage): model is ArchiveModel { return "archive" in model; }
+
 const MODEL_RELEASE = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/";
 const SHARED_MODEL_FILES: readonly PackageFile[] = [
   { name: "decoder.int8.onnx", bytes: 14_978_075, sha256: "19f9c98fc6d0a2c33a65a43b36fdb2e914c26c0aa9764be3aebc502a1e982fb0" },
   { name: "joiner.int8.onnx", bytes: 9_504_438, sha256: "4101c7c679a0bc30483794b27a059e34e79232aa2068d78d51231a22c8b0d7ce" },
   { name: "tokens.txt", bytes: 131_440, sha256: "729cc103155bafa785f9cd45746cd41cabe97eab7182fc04d594129587958f8a" },
 ];
-function modelPackage(latency: Latency, bytes: number, sha256: string, encoderBytes: number, encoderSha256: string): ModelPackage {
+function modelPackage(latency: Latency, bytes: number, sha256: string, encoderBytes: number, encoderSha256: string): ArchiveModel {
   const directory = `sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-${latency}ms-int8-2026-06-11`;
   return {
-    latency, directory, archive: `${directory}.tar.bz2`, url: `${MODEL_RELEASE}${directory}.tar.bz2`, bytes, sha256,
+    latency, precision: "int8", directory, archive: `${directory}.tar.bz2`, url: `${MODEL_RELEASE}${directory}.tar.bz2`, bytes, sha256,
     files: [{ name: "encoder.int8.onnx", bytes: encoderBytes, sha256: encoderSha256 }, ...SHARED_MODEL_FILES],
+    entry: { encoder: "encoder.int8.onnx", decoder: "decoder.int8.onnx", joiner: "joiner.int8.onnx", tokens: "tokens.txt" },
   };
 }
-export const MODELS: Readonly<Record<Latency, ModelPackage>> = {
+/** The compact (int8) packages; one exists for every latency. */
+export const MODELS: Readonly<Record<Latency, ArchiveModel>> = {
   "160": modelPackage("160", 475_273_363, "a81909a1780d84cff16d73c15e13e67d9d81d8839faf14870d507d8499f7a61a", 657_601_518, "e1b39e5e16bef578a54ed2fba5f031438e000cc36c3ea2ca49d55699d5baebd4"),
   "320": modelPackage("320", 475_272_949, "5f311142337a5c161e92d49f7a3009d8607d3836f39d610bff5307c74d1d2c53", 657_601_518, "f79c3fcc149f268b54b7d5754bdc2ba5c47c16b1fc70d15728a56f6efbf60ca5"),
   "560": modelPackage("560", 475_271_763, "c6bf5e0df765f9d5b43bc9e0536d4b4b3e7d40bdf5ecf13e45f134c51c05ae3a", 657_601_403, "012e9321373af99021415e0b0eb3ec827b4be3153be6f30d9b448fe65e896e68"),
   "1120": modelPackage("1120", 475_276_334, "adbdd5e9fef87300c37cebfcfc4f1ebe56845c860c8a760af0a1dd65ce9beed3", 657_601_521, "2fff2166acaa535bd969fb223c1f0783d71029f143cb298bc54c2afe85abf772"),
 };
+
+/** A full-precision package: the sherpa-onnx maintainer's Hugging Face repository
+ * for one latency, pinned to a commit so the files behind the URLs cannot change. */
+export function fullPrecisionPackage(latency: Latency, revision: string, files: readonly PackageFile[]): LooseModel {
+  const directory = `sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-${latency}ms-2026-06-11`;
+  return {
+    latency, precision: "fp32", directory, files,
+    baseUrl: `https://huggingface.co/csukuangfj2/${directory}/resolve/${revision}/`,
+    entry: { encoder: "encoder.onnx", decoder: "decoder.onnx", joiner: "joiner.onnx", tokens: "tokens.txt" },
+  };
+}
+/** The full-precision (fp32) packages. A latency without an entry is not offered
+ * in full precision; while the table is empty the setting is not shown at all. */
+// The weights, prediction network, joint network and vocabulary are the same
+// files in all four repositories; only the small encoder graph differs.
+const FULL_SHARED_FILES: readonly PackageFile[] = [
+  { name: "encoder.data", bytes: 2_454_405_120, sha256: "7584f85df76bc9ae6fbdfa53aa8d97b07a842525d1c501d536d77fd9e4f57ac7" },
+  { name: "decoder.onnx", bytes: 59_764_944, sha256: "f9c59ee6fa130bc2ba349dbcbba7c74a4a960a98d4196295ba4e8e5d6bde6b68" },
+  { name: "joiner.onnx", bytes: 37_824_291, sha256: "a6bd74c0a31cbde0da0368c1e29d171752108c7ad1231630e079a7d97ceee6f0" },
+  { name: "tokens.txt", bytes: 131_440, sha256: "729cc103155bafa785f9cd45746cd41cabe97eab7182fc04d594129587958f8a" },
+];
+function fullPrecision(latency: Latency, revision: string, encoderBytes: number, encoderSha256: string): LooseModel {
+  return fullPrecisionPackage(latency, revision, [{ name: "encoder.onnx", bytes: encoderBytes, sha256: encoderSha256 }, ...FULL_SHARED_FILES]);
+}
+export const FULL_PRECISION_MODELS: Readonly<Partial<Record<Latency, LooseModel>>> = {
+  "160": fullPrecision("160", "44d1e59cb0f8d6f91dc32cb2af4a76b6130393f6", 42_247_580, "e714a7cdd4a804dba85aea4cb0cffa5c0daef46752050d2738d1b502d4b4ab58"),
+  "320": fullPrecision("320", "9fafa57a2ba5f3bab0823274b7543fb353e53ffd", 42_247_580, "93efa4bdad4a3ca47d171f22e31c5828fc86cad30b08b4af999f25122fd65925"),
+  "560": fullPrecision("560", "2072aba9fb2d6ee6202b69e441761599ab7520b8", 42_247_484, "f1e540e03cb2cc57f5c0f6416b893768cfda23e756bfc0a2c4d502a1350325af"),
+  "1120": fullPrecision("1120", "1ecc0a04c7658b6be62b97051fd21f67421392e8", 42_247_583, "7f6b9d121818aff3746153719afdaaa0c1063dc2bf8e49b1039efdeb76df3b1b"),
+};
+
+const CATALOG: Readonly<Record<Precision, Readonly<Partial<Record<Latency, ModelPackage>>>>> = { int8: MODELS, fp32: FULL_PRECISION_MODELS };
+export function modelFor(latency: Latency, precision: Precision): ModelPackage | undefined {
+  return CATALOG[precision][latency];
+}
+/** Precisions that at least one latency can be installed in. */
+export function offeredPrecisions(): Precision[] {
+  return PRECISIONS.filter(precision => LATENCIES.some(latency => modelFor(latency, precision)));
+}
+/** Bytes to fetch, and bytes the installed files occupy. */
+export function modelSize(model: ModelPackage): { download: number; installed: number } {
+  const installed = model.files.reduce((sum, file) => sum + file.bytes, 0);
+  return { download: isArchiveModel(model) ? model.bytes : installed, installed };
+}
 
 /* ----------------------------------------------------------------------------
  * Native speech engine: the prebuilt sherpa-onnx Node addon (N-API) with ONNX
@@ -220,6 +293,8 @@ export interface Settings {
   /** "host" (follow LearnHarness's Dictation language), "auto" or a LANGUAGES[].code. */
   language: string;
   latency: Latency;
+  /** Which export of the model to run; see PRECISIONS. */
+  precision: Precision;
   /** 0 chooses from the number of CPU cores. */
   threads: number;
   /** Finish automatically after this many seconds without new words. 0 keeps listening. */
@@ -233,7 +308,7 @@ export interface Settings {
   nodePath: string;
 }
 export const DEFAULT_SETTINGS: Readonly<Settings> = Object.freeze({
-  revision: 0, replaceBuiltIn: true, liveButton: false, language: HOST_LANGUAGE, latency: "560", threads: 0,
+  revision: 0, replaceBuiltIn: true, liveButton: false, language: HOST_LANGUAGE, latency: "560", precision: "int8", threads: 0,
   autoStopSeconds: 0, preload: true, unloadAfterMinutes: 30, engineMode: "auto", nodePath: "",
 });
 export const LIMITS = { threads: { min: 0, max: 16 }, autoStopSeconds: { min: 0, max: 600 }, unloadAfterMinutes: { min: 0, max: 720 } } as const;
@@ -260,6 +335,7 @@ export function parseSettingsPatch(value: unknown): SettingsPatch {
       case "preload": if (typeof entry !== "boolean") throw new Error("Load at start must be on or off."); patch.preload = entry; break;
       case "liveButton": if (typeof entry !== "boolean") throw new Error("Live-typing button must be on or off."); patch.liveButton = entry; break;
       case "latency": if (!isLatency(entry)) throw new Error("Unsupported responsiveness setting."); patch.latency = entry; break;
+      case "precision": if (!isPrecision(entry)) throw new Error("Unsupported model precision."); patch.precision = entry; break;
       case "threads": patch.threads = integerIn(entry, LIMITS.threads, "CPU threads"); break;
       case "autoStopSeconds": patch.autoStopSeconds = integerIn(entry, LIMITS.autoStopSeconds, "Auto-stop"); break;
       case "unloadAfterMinutes": patch.unloadAfterMinutes = integerIn(entry, LIMITS.unloadAfterMinutes, "Unload delay"); break;
@@ -308,13 +384,16 @@ export interface Status {
   platform: { key: string; supported: boolean };
   engineInstalled: boolean;
   modelInstalled: boolean;
-  /** Latencies whose model package is already on disk. */
+  /** Latencies whose model package, in the chosen precision, is already on disk. */
   installedModels: Latency[];
+  /** Precisions already on disk for the chosen latency. */
+  installedPrecisions: Precision[];
   install: InstallProgress;
   engine: { state: "unloaded" | "loading" | "ready" | "error"; mode?: "in-process" | "external"; error?: string; loadMs?: number };
   sessionActive: boolean;
   downloadsDirectory: string;
-  /** What a full installation for the current settings still has to fetch. */
+  /** What a full installation for the current settings still has to fetch. `file`
+   * is where it is kept, relative to the downloads directory. */
   pending: { name: string; url: string; bytes: number; file: string }[];
   cores: number;
   threads: number;

@@ -2,6 +2,21 @@
 
 All notable changes. Versions follow [semantic versioning](https://semver.org/).
 
+## 0.3.0 — not yet released
+
+### Added
+- **Model size and precision** setting: besides the compact 8-bit model (still the
+  default and the recommended one), the full-precision export of the same model can be
+  chosen for every responsiveness step. It is a 2.59 GB download from huggingface.co
+  and needs at least 2.5 GB of memory and more CPU. Both can be installed side by side.
+  The full-precision model has not yet been tried with the real files.
+- The installer can fetch a model that is published as separate files, with the same
+  resume, checksum and offline-install behaviour as archives.
+
+### Changed
+- The install card and settings quote the disk and memory needs of the model that is
+  actually selected.
+
 ## 0.2.0 — 2026-11-14
 
 First public release.

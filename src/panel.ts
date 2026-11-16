@@ -2,8 +2,9 @@
  * plugin's Settings page, plus the settings rows themselves. */
 import type { PluginFrontendContext, PluginSettingsSchema, PluginWidgetHandle } from "learnharness-plugin-api";
 import {
-  AUTO_LANGUAGE, ENGINE_MODES, HOST_LANGUAGE, LANGUAGES, LATENCIES, LATENCY_LABELS, LIMITS, MODEL_NAME, formatBytes,
-  type EngineMode, type Latency, type Settings, type SettingsPatch, type Status,
+  AUTO_LANGUAGE, ENGINE_MODES, HOST_LANGUAGE, LANGUAGES, LATENCIES, LATENCY_LABELS, LIMITS, MODELS, MODEL_NAME, PRECISION_LABELS,
+  PRECISION_MEMORY, PRECISION_NAMES, formatBytes, isArchiveModel, modelFor, modelSize, offeredPrecisions,
+  type EngineMode, type Latency, type ModelPackage, type Precision, type Settings, type SettingsPatch, type Status,
 } from "./contract.ts";
 
 export interface StatusStore {
@@ -33,6 +34,20 @@ const PHASES: Record<Status["install"]["phase"], string> = {
 function host(url: string): string {
   try { return new URL(url).host; } catch { return url; }
 }
+/** The model package the current settings select (the backend guarantees one exists). */
+function selectedModel(settings: Settings): ModelPackage {
+  return modelFor(settings.latency, settings.precision) ?? MODELS[settings.latency];
+}
+/** One line per download; a model published as several files counts as one. */
+function summarize(pending: Status["pending"]): { name: string; bytes: number; from: string }[] {
+  const lines = new Map<string, { name: string; bytes: number; from: string }>();
+  for (const item of pending) {
+    const line = lines.get(item.name);
+    if (line) line.bytes += item.bytes;
+    else lines.set(item.name, { name: item.name, bytes: item.bytes, from: host(item.url) });
+  }
+  return [...lines.values()];
+}
 
 /** Mount the live installation card. Returns cleanup. */
 export function mountInstallation(
@@ -60,7 +75,7 @@ export function mountInstallation(
     const install = status.install;
     const busy = install.phase !== "idle" && install.phase !== "done" && install.phase !== "error";
     // Progress updates only move the bar; everything else re-renders on change.
-    const shape = JSON.stringify([status.platform, ready, busy ? install.phase : install, status.pending, status.engine, status.settings.latency, status.settings.replaceBuiltIn, status.threads]);
+    const shape = JSON.stringify([status.platform, ready, busy ? install.phase : install, status.pending, status.engine, status.settings.latency, status.settings.precision, status.settings.replaceBuiltIn, status.threads]);
     if (shape === rendered) {
       const bar = card.querySelector<HTMLElement>(".odd-progress > i");
       const figures = card.querySelector<HTMLElement>(".odd-figures");
@@ -100,18 +115,22 @@ export function mountInstallation(
       const total = status.pending.reduce((sum, item) => sum + item.bytes, 0);
       card.append(node("p", "", `Dictation can run on this computer with NVIDIA's ${MODEL_NAME} model, the same model VS Code's on-device dictation uses, instead of Deepgram. It needs a one-time download of ${formatBytes(total)}; after that no audio or text is sent anywhere, no Deepgram key is needed, and dictation works offline.`));
       const list = node("ul", "odd-list");
-      for (const item of status.pending) list.append(node("li", "", `${item.name} — ${formatBytes(item.bytes)} from ${host(item.url)}`));
-      card.append(list, node("p", "odd-muted", "Needs about 1.2 GB of free disk space while installing (0.7 GB afterwards) and about 1 GB of memory while the model is loaded. Each file is checked against its published checksum before it is used. The model is licensed by NVIDIA under OpenMDW-1.1."));
+      for (const item of summarize(status.pending)) list.append(node("li", "", `${item.name} — ${formatBytes(item.bytes)} from ${item.from}`));
+      const model = selectedModel(status.settings);
+      const size = modelSize(model);
+      // An archive sits beside its unpacked files until it is deleted; separate files are moved.
+      const installing = isArchiveModel(model) ? size.download + size.installed : size.installed;
+      card.append(list, node("p", "odd-muted", `The ${PRECISION_NAMES[model.precision]} model needs about ${formatBytes(installing)} of free disk space while installing (${formatBytes(size.installed)} afterwards) and ${PRECISION_MEMORY[model.precision]} of memory while it is loaded. Each file is checked against its published checksum before it is used. The model is licensed by NVIDIA under OpenMDW-1.1.`));
       const actions = node("div", "odd-actions");
       card.append(actions);
       button(actions, install.phase === "error" ? "Try again" : "Download and install", () => act("install"), "default");
       const manual = node("details", "odd-details");
       manual.append(node("summary", "", "Install without a download (offline or behind a proxy)"));
-      manual.append(node("p", "", "Download these files on any computer, put them in the folder below, then choose “Download and install” — files already in the folder are verified and used instead of being fetched."));
+      manual.append(node("p", "", "Download these files on any computer, put each in the folder below under the name shown after it, then choose “Download and install” — files already there are verified and used instead of being fetched."));
       const files = node("ul", "odd-list");
       for (const item of status.pending) {
         const entry = node("li");
-        entry.append(node("span", "odd-code", item.url));
+        entry.append(node("span", "odd-code", item.url), node("span", "odd-muted", " → "), node("span", "odd-code", item.file));
         files.append(entry);
       }
       manual.append(files, node("p", "odd-code", status.downloadsDirectory));
@@ -127,7 +146,7 @@ export function mountInstallation(
       card.append(
         node("div", "odd-state", engine.state === "error" ? "Speech engine problem" : "Ready — dictation is transcribed on this computer"),
         node("p", engine.state === "error" ? "" : "odd-muted", line),
-        node("p", "odd-muted", `Model: ${MODEL_NAME}, ${status.settings.latency} ms steps, ${status.threads} CPU thread${status.threads === 1 ? "" : "s"}.`),
+        node("p", "odd-muted", `Model: ${MODEL_NAME}, ${status.settings.latency} ms steps, ${PRECISION_NAMES[status.settings.precision]}, ${status.threads} CPU thread${status.threads === 1 ? "" : "s"}.`),
         node("p", "odd-muted", status.settings.replaceBuiltIn
           ? "LearnHarness's Dictate button uses it. No Deepgram key is needed; the Deepgram entry under Settings → Dictation can stay empty."
           : "LearnHarness's Dictate button is using Deepgram. Turn on “Replace built-in dictation” below to use this instead."),
@@ -162,7 +181,7 @@ function confirmRemoval(ctx: PluginFrontendContext, store: StatusStore, signal: 
       const panel = node("div", "odd-panel odd-dialog");
       panel.append(
         node("h2", "", "Remove the downloaded speech files?"),
-        node("p", "", "This deletes the speech engine and every downloaded model from this plugin's data folder (about 0.7 GB per model). Your settings are kept. Dictation will ask to download them again."),
+        node("p", "", "This deletes the speech engine and every downloaded model from this plugin's data folder. Your settings are kept. Dictation will ask to download them again."),
       );
       const actions = node("div", "odd-actions");
       panel.append(actions);
@@ -219,6 +238,28 @@ export function openSetupDialog(
 function settingsRows(status: Status, change: (patch: SettingsPatch) => Promise<void>): PluginSettingsSchema["rows"] {
   const settings: Settings = status.settings;
   const installed = new Set<Latency>(status.installedModels);
+  const installedPrecisions = new Set<Precision>(status.installedPrecisions);
+  const size = modelSize(selectedModel(settings));
+  // Only what can actually be installed is offered; with one precision there is nothing to choose.
+  const precisions = offeredPrecisions();
+  const precisionRow: PluginSettingsSchema["rows"] = precisions.length < 2 ? [] : [{
+    key: "precision", type: "dropdown", label: "Model size and precision", value: settings.precision,
+    description: (() => {
+      const full = modelFor(settings.latency, "fp32");
+      if (!full) return "Only the compact model is published for this responsiveness step.";
+      return `Full precision can be more accurate, but needs ${PRECISION_MEMORY.fp32} of memory and more CPU. If text falls behind, go back to Compact.`;
+    })(),
+    options: precisions.filter(precision => modelFor(settings.latency, precision))
+      .map(precision => {
+        const download = formatBytes(modelSize(modelFor(settings.latency, precision)!).download);
+        return { value: precision, label: `${PRECISION_LABELS[precision]} — ${installedPrecisions.has(precision) ? "installed" : download}` };
+      }),
+    onChange: precision => change({ precision: precision as Precision }),
+  }];
+  const latencyNote = (latency: Latency): string => {
+    if (!modelFor(latency, settings.precision)) return " — compact model only";
+    return installed.has(latency) ? "" : " — not downloaded";
+  };
   return [
     {
       key: "replaceBuiltIn", type: "toggle", label: "Replace built-in dictation", value: settings.replaceBuiltIn,
@@ -237,10 +278,11 @@ function settingsRows(status: Status, change: (patch: SettingsPatch) => Promise<
     },
     {
       key: "latency", type: "dropdown", label: "Responsiveness", value: settings.latency,
-      description: "How often new words appear. Larger steps are more accurate and use less CPU. Each choice is its own 475 MB model download.",
-      options: LATENCIES.map(latency => ({ value: latency, label: `${LATENCY_LABELS[latency]}${installed.has(latency) ? "" : " — not downloaded"}` })),
+      description: `How often new words appear. Larger steps are more accurate and use less CPU. Each choice is its own ${formatBytes(size.download)} model download.`,
+      options: LATENCIES.map(latency => ({ value: latency, label: `${LATENCY_LABELS[latency]}${latencyNote(latency)}` })),
       onChange: latency => change({ latency: latency as Latency }),
     },
+    ...precisionRow,
     {
       key: "liveButton", type: "toggle", label: "Extra: live-typing button", value: settings.liveButton,
       description: "Adds a separate microphone button (session top bars, sidebar; shortcut Ctrl/Cmd+Shift+M) that types words at the cursor while you speak, instead of when you stop.",
@@ -263,7 +305,7 @@ function settingsRows(status: Status, change: (patch: SettingsPatch) => Promise<
     },
     {
       key: "unloadAfterMinutes", type: "number", label: "Release the model after idle minutes", value: settings.unloadAfterMinutes, ...LIMITS.unloadAfterMinutes, step: 1,
-      description: "The loaded model uses about 1 GB of memory. It is released after this long without dictating and loads again on the next use. 0 keeps it loaded.",
+      description: `The loaded model uses ${PRECISION_MEMORY[settings.precision]} of memory. It is released after this long without dictating and loads again on the next use. 0 keeps it loaded.`,
       onChange: unloadAfterMinutes => change({ unloadAfterMinutes }),
     },
     {
@@ -300,13 +342,13 @@ export function mountSettings(container: HTMLElement, ctx: PluginFrontendContext
   };
   let last = "";
   const unsubscribe = store.subscribe(status => {
-    const shape = JSON.stringify([status.settings, status.installedModels, status.threads]);
+    const shape = JSON.stringify([status.settings, status.installedModels, status.installedPrecisions, status.threads]);
     if (shape === last) return;
     last = shape;
     apply(status);
   });
   const now = store.current();
-  if (now) { last = JSON.stringify([now.settings, now.installedModels, now.threads]); apply(now); }
+  if (now) { last = JSON.stringify([now.settings, now.installedModels, now.installedPrecisions, now.threads]); apply(now); }
   return () => {
     unsubscribe();
     rows?.dispose();

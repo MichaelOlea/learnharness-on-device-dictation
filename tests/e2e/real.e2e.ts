@@ -7,6 +7,7 @@
  *   ODD_E2E_WAV    16 kHz mono 16-bit WAV to transcribe
  *   ODD_E2E_EXPECT words that must appear in the transcript, separated by "|"
  *   ODD_E2E_MODE   engine mode to force (auto | in-process | external)
+ *   ODD_E2E_PRECISION  model precision (int8 | fp32); fp32 needs ~2.6 GB of disk and ~3 GB of memory
  *   ODD_E2E_SPEED  playback speed relative to real time (default 1)
  */
 import assert from "node:assert/strict";
@@ -51,6 +52,7 @@ test("install from the published packages and transcribe on this machine", { ski
     assert.equal(status.platform.supported, true);
     if (process.env.ODD_E2E_MODE) status = await host.call<Status>("set-settings", { engineMode: process.env.ODD_E2E_MODE });
     if (process.env.ODD_E2E_LATENCY) status = await host.call<Status>("set-settings", { latency: process.env.ODD_E2E_LATENCY });
+    if (process.env.ODD_E2E_PRECISION) status = await host.call<Status>("set-settings", { precision: process.env.ODD_E2E_PRECISION });
     if (process.env.ODD_E2E_LANGUAGE) status = await host.call<Status>("set-settings", { language: process.env.ODD_E2E_LANGUAGE });
     if (!status.engineInstalled || !status.modelInstalled) {
       console.log("installing:", status.pending.map(item => `${item.file} (${item.bytes})`).join(", "));

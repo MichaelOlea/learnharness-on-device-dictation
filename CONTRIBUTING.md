@@ -18,7 +18,7 @@ Node.js 20.3 or newer, plus `tar` and `bzip2` for the installer test fixtures.
 npm ci
 npm run build       # dist/ — what LearnHarness loads
 npm run typecheck
-npm test            # builds, then runs tests/*.test.ts (72 tests, no network)
+npm test            # builds, then runs tests/*.test.ts (85 tests, no network)
 npm run package     # release/on-device-dictation.zip
 ```
 
